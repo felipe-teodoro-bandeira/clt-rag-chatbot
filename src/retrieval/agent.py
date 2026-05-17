@@ -205,3 +205,46 @@ def get_agent_answer(question: str, chat_history: list[tuple[str, str]]) -> str:
         "answer": "",
     })
     return result["answer"]
+
+
+def get_agent_answer_traced(
+    question: str,
+    chat_history: list[tuple[str, str]],
+) -> tuple[str, list[str], list[str]]:
+    """Returns (answer, used_articles, all_retrieved_articles).
+
+    used_articles: artigos dos chunks com combined >= RELEVANCE_THRESHOLD,
+                   ou top 4 como fallback se nenhum passar o threshold.
+    all_retrieved_articles: todos os artigos retornados pelo retriever na última tentativa.
+    """
+    global _graph
+    if _graph is None:
+        _graph = _build_graph()
+
+    llm, _ = _get_components()
+    query = question
+    if chat_history:
+        formatted = "\n".join(
+            f"Humano: {h}\nAssistente: {a}" for h, a in chat_history
+        )
+        query = (_CONDENSE_PROMPT | llm | StrOutputParser()).invoke({
+            "chat_history": formatted,
+            "question": question,
+        })
+
+    result = _graph.invoke({
+        "original_question": question,
+        "current_query": query,
+        "chat_history": chat_history,
+        "retrieved_docs": [],
+        "chunk_scores": [],
+        "attempts": 0,
+        "answer": "",
+    })
+
+    all_retrieved = [s["doc"].metadata.get("artigo", "—") for s in result["chunk_scores"]]
+    good = [s for s in result["chunk_scores"] if s["combined"] >= RELEVANCE_THRESHOLD]
+    docs_to_use = good if good else result["chunk_scores"][:4]
+    used = [s["doc"].metadata.get("artigo", "—") for s in docs_to_use]
+
+    return result["answer"], used, all_retrieved
